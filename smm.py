@@ -15,13 +15,16 @@ import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from Model import UNet
 import torch.nn.functional as F
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+import sys
+import logging
+
+
 modelConfig = {
     "state": "train", # or eval
     "epoch": 200,
     "batch_size": 80,
-    "T": 100,
-    "channel": 64,
+    "T": 20,
+    "channel": 32,
     "channel_mult": [1, 2, 3, 4],
     "attn": [2],
     "num_res_blocks": 1,
@@ -147,7 +150,7 @@ if __name__ == '__main__':
     parser.add_argument('--cuda', action='store_true', help='enables cuda')
     parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
     parser.add_argument('--netG', default='', help="path to netG (to continue training)")
-    parser.add_argument('--netD', default='', help="path to netD (to continue training)")
+    parser.add_argument('--netS', default='', help="path to netS (to continue training)")
     parser.add_argument('--outf', default='.', help='folder to output images and model checkpoints')
     parser.add_argument('--manualSeed', type=int, help='manual seed')
 
@@ -190,7 +193,7 @@ if __name__ == '__main__':
     ndf = int(opt.ndf)
 
 
-    # custom weights initialization called on netG and netD
+    # custom weights initialization called on netG and netS
     def weights_init(m):
         classname = m.__class__.__name__
         if classname.find('Conv') != -1:
@@ -201,21 +204,21 @@ if __name__ == '__main__':
 
     netG = Generator(ngpu).to(device)
     netG.apply(weights_init)
-    net3=   UNet(T=modelConfig["T"], ch=modelConfig["channel"], ch_mult=modelConfig["channel_mult"], attn=modelConfig["attn"],
+    netS=   UNet(T=modelConfig["T"], ch=modelConfig["channel"], ch_mult=modelConfig["channel_mult"], attn=modelConfig["attn"],
                      num_res_blocks=modelConfig["num_res_blocks"], dropout=modelConfig["dropout"]).to(device)
-    net3.train()
-    net3.requires_grad_=True
+    netS.train()
+    netS.requires_grad_=True
     if opt.netG != '':
         netG.load_state_dict(torch.load(opt.netG))
     print(netG)
 
 
 
-    netD = net3# Discriminator(ngpu).to(device)
-    #netD.apply(weights_init)
-    if opt.netD != '':
-        netD.load_state_dict(torch.load(opt.netD))
-    print(netD)
+    netS = netS# Discriminator(ngpu).to(device)
+    #netS.apply(weights_init)
+    if opt.netS != '':
+        netS.load_state_dict(torch.load(opt.netS))
+    print(netS)
 
     criterion = nn.BCELoss()
 
@@ -224,47 +227,16 @@ if __name__ == '__main__':
     fake_label = 0
 
     # setup optimizer
-    optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+    optimizerS = optim.Adam(netS.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
-    div = 3
+
     for epoch in range(opt.niter):
         for i, data in enumerate(dataloader, 0):
             ############################
-            ############################
-            # (2) Update G network: maximize log(D(G(z)))
-            ###########################
-            #netG.zero_grad()
-            
-            real_cpu = data[0].to(device)
-            
-            batch_size = real_cpu.size(0)
-        
-            netG.zero_grad()
-        
-            noise = torch.randn(batch_size, nz, 1, 1, device=device)
-        
-            x_0 =netG(noise)
-                #fake
-            t = torch.randint(T, size=(x_0.shape[0], ), device=x_0.device)
-            noise = torch.randn_like(x_0)/div
-            x_t = (
-                        extract(sqrt_alphas_bar, t, x_0.shape) * x_0 +
-                        extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)
-            #x_t = (
-                #x_0 +
-                #extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)            
-            loss = F.mse_loss(net3(x_t, t), noise, reduction='none')  
-            D_G_z2 = loss.mean().item()
-        
-            errG = loss.sum() / 1000
-            #errG =errG+loss
-            errG.backward()
-            optimizerG.step()
-            
-            # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+            # (1) Update score network:
             ###########################
             # train with real
-            netD.zero_grad()
+            net.zero_grad()
             real_cpu = data[0].to(device)
             batch_size = real_cpu.size(0)
 
@@ -273,14 +245,11 @@ if __name__ == '__main__':
             x_0 = real_cpu#netG(noise)
              #fake
             t = torch.randint(T, size=(x_0.shape[0], ), device=x_0.device)
-            noise = torch.randn_like(x_0)/div
+            noise = torch.randn_like(x_0)
             x_t = (
-                extract(sqrt_alphas_bar, t, x_0.shape) * x_0 +
+                x_0 +
                 extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)
-            #x_t = (
-                #x_0 +
-                #extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)            
-            loss = F.mse_loss(netD(x_t, t), noise, reduction='none')    
+            loss = F.mse_loss(netS(x_t, t), noise, reduction='none')    
             D_x = loss.mean().item()
             errD_real = loss.sum() / 1000
             errD_real.backward()
@@ -295,25 +264,44 @@ if __name__ == '__main__':
             x_0 = netG(noise)
              #fake
             t = torch.randint(T, size=(x_0.shape[0], ), device=x_0.device)
-            noise = torch.randn_like(x_0)/div
-            noise2 = torch.randn_like(x_0)/div#.fill_(0)
-            #noise2 = torch.randn_like(x_0).fill_(-1)
+            noise = torch.randn_like(x_0)
+            noise2 = torch.randn_like(x_0)
             x_t = (
-                extract(sqrt_alphas_bar, t, x_0.shape) * x_0.detach() +
+                x_0 +
                 extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)
-            #x_t = (
-                #x_0 +
-                #extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)
-            loss = F.mse_loss(netD(x_t, t), noise2, reduction='none')   
+            loss = F.mse_loss(netS(x_t, t), noise2, reduction='none')   
             D_G_z1 = loss.mean().item()
             
             errD_fake = loss.sum() / 1000
             #errG =errG+loss
             errD_fake.backward()
             errD = errD_real + errD_fake
-            optimizerD.step()
+            optimizerS.step()
             
-    #############
+            ############################
+            # (2) Update G network:
+            ###########################
+            #netG.zero_grad()
+       
+            netG.zero_grad()
+            
+            noise = torch.randn(batch_size, nz, 1, 1, device=device)
+            
+            x_0 =netG(noise)
+             #fake
+            t = torch.randint(T, size=(x_0.shape[0], ), device=x_0.device)
+            noise = torch.randn_like(x_0)
+            x_t = (
+                 x_0 +
+                extract(sqrt_one_minus_alphas_bar, t, x_0.shape) * noise)
+            loss = F.mse_loss(netS(x_t, t), noise, reduction='none')  
+            D_G_z2 = loss.mean().item()
+            
+            errG = loss.sum() / 1000
+            #errG =errG+loss
+            errG.backward()
+            optimizerG.step()
+
             print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
                   % (epoch, opt.niter, i, len(dataloader),
                      errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
@@ -328,4 +316,4 @@ if __name__ == '__main__':
 
         # do checkpointing
         torch.save(netG.state_dict(), '%s/netG_epoch_%d.pth' % (opt.outf, epoch))
-        torch.save(netD.state_dict(), '%s/netD_epoch_%d.pth' % (opt.outf, epoch))
+        torch.save(netS.state_dict(), '%s/netS_epoch_%d.pth' % (opt.outf, epoch))
