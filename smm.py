@@ -44,7 +44,7 @@ modelConfig = {
  
 #net_model.load_state_dict(torch.load(os.path.join(
     #modelConfig["save_weight_dir"], modelConfig["training_load_weight"]), map_location=device)) 
-# python dcgan.py --dataset cifar10 --dataroot ./data/cifar10 --imageSize 32 --cuda --outf out_cifar --manualSeed 13 --niter 100
+# python smm.py --dataset cifar10 --dataroot ./data/cifar10 --imageSize 32 --cuda --outf out_cifar --manualSeed 13 --niter 100
 
 class Generator(nn.Module):
     def __init__(self, ngpu, nc=3, nz=100, ngf=64):
@@ -203,7 +203,6 @@ if __name__ == '__main__':
     netG.apply(weights_init)
     net3=   UNet(T=modelConfig["T"], ch=modelConfig["channel"], ch_mult=modelConfig["channel_mult"], attn=modelConfig["attn"],
                      num_res_blocks=modelConfig["num_res_blocks"], dropout=modelConfig["dropout"]).to(device)
-    #net3.load_state_dict(torch.load('/disk/yesenmao/ddpm/Ddpm_prob/Checkpoints/DiffusionWeight.pt', map_location=device)) 
     net3.train()
     net3.requires_grad_=True
     if opt.netG != '':
